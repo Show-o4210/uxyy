@@ -1,0 +1,32 @@
+name: Daily Sync File
+
+on:
+  schedule:
+    # 每天 UTC 22:00 运行（对应 UTC+8 每天早晨 06:00）
+    - cron: '0 22 * * *'
+  # 支持在 GitHub 网页上手动点击触发测试
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch target file
+        run: |
+          TARGET_URL="https://github.com/gsfsfec/uyykbhhxf/blob/main/pmbit.json"
+          
+          curl -sSL "$TARGET_URL" -o token.json
+
+      - name: Commit and push changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: daily sync update [skip ci]"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
