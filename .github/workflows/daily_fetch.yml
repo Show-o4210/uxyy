@@ -4,7 +4,7 @@ on:
   schedule:
     # 每天 UTC 22:00 运行（对应 UTC+8 每天早晨 06:00）
     - cron: '0 22 * * *'
-  # 支持在 GitHub 网页上手动点击触发测试
+  # 支持在 GitHub 网页手动点击 Run workflow 测试
   workflow_dispatch:
 
 permissions:
@@ -17,16 +17,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch target file
+      - name: Fetch token.json from Raw URL
         run: |
-          TARGET_URL="https://github.com/gsfsfec/uyykbhhxf/blob/main/pmbit.json"
+          RAW_URL="https://raw.githubusercontent.com/gsfsfec/uyykbhhxf/main/pmbit.json"
           
-          curl -sSL "$TARGET_URL" -o token.json
+          curl -sSL "$RAW_URL" -o token.json
+          
+          if [ ! -s token.json ]; then
+            echo "Error: Downloaded file is empty!"
+            exit 1
+          fi
 
       - name: Commit and push changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore: daily sync update [skip ci]"
+          commit_message: "chore: update token.json [skip ci]"
+          file_pattern: "token.json"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
           commit_author: "github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
