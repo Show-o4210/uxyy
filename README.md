@@ -1,5 +1,7 @@
 # PVZH 钻石工具
 
+特别鸣谢：是朵朵啊
+
 一个使用 Kotlin 与 Jetpack Compose 编写的 Android 工具项目。本仓库同时保存应用源码、凭证池数据和版本信息，供学习、研究与经授权的测试使用。
 
 > [!CAUTION]
