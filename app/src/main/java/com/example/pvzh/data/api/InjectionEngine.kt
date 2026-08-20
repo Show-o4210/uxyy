@@ -45,7 +45,7 @@ class InjectionEngine(
             targetPersonaId = targetPersonaId,
             gems = gems,
             concurrency = 8,
-            requirePreflightLogin = false,
+            requirePreflightLogin = true,
             isCancelled = isCancelled,
         )
         return detail.isSuccess to detail.successfulIndex
@@ -59,7 +59,7 @@ class InjectionEngine(
         targetPersonaId: String,
         gems: Int,
         startIndex: Int = 0,
-        requirePreflightLogin: Boolean = false,
+        requirePreflightLogin: Boolean = true,
         isCancelled: () -> Boolean = { false },
     ): InjectionDetailResult {
         if (credentials.isEmpty()) {
@@ -119,7 +119,7 @@ class InjectionEngine(
         targetPersonaId: String,
         gems: Int,
         concurrency: Int = 8,
-        requirePreflightLogin: Boolean = false,
+        requirePreflightLogin: Boolean = true,
         isCancelled: () -> Boolean = { false },
     ): InjectionDetailResult = coroutineScope {
         if (credentials.isEmpty()) {
@@ -204,7 +204,7 @@ class InjectionEngine(
         gemsPerTimes: Int,
         times: Int,
         concurrency: Int = 8,
-        requirePreflightLogin: Boolean = false,
+        requirePreflightLogin: Boolean = true,
         isCancelled: () -> Boolean = { false },
         onProgress: (completed: Int) -> Unit = {},
     ): List<InjectionDetailResult> = coroutineScope {
@@ -283,7 +283,11 @@ class InjectionEngine(
                 executorPersonaId = cred.executorPersonaId,
                 accessToken = cred.accessToken,
             )
-            if (login is ApiCallResult.AuthFailed) return login
+            // updateDailyLoginProgress establishes the server-side state consumed by
+            // leagueRewards/sync. Do not send the dependent request when preflight
+            // failed; a later retry (after token refresh when applicable) must run
+            // the complete two-request pipeline again.
+            if (login !is ApiCallResult.Success) return login
         }
 
         val league = gameApi.syncLeagueRewards(

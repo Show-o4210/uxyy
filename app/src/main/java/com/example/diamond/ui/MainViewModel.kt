@@ -165,7 +165,7 @@ class MainViewModel(
                         credentials = state.runtimeCredentials,
                         targetPersonaId = personaId,
                         gems = gems,
-                        requirePreflightLogin = false,
+                        requirePreflightLogin = true,
                         isCancelled = { _uiState.value.isCancelled },
                     )
                     _uiState.update { it.copy(completedTasks = 1) }
@@ -183,7 +183,7 @@ class MainViewModel(
                         gemsPerTimes = gems,
                         times = times,
                         concurrency = 32,
-                        requirePreflightLogin = false,
+                        requirePreflightLogin = true,
                         isCancelled = { _uiState.value.isCancelled },
                         onProgress = { completed ->
                             _uiState.update { it.copy(completedTasks = completed) }
