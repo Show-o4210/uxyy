@@ -276,18 +276,15 @@ class InjectionEngine(
         gems: Int,
         requirePreflightLogin: Boolean,
     ): ApiCallResult {
-        // 如果开启了前置登录，先发 updateDailyLogin；否则直接进行联赛奖励同步（更高速）
+        // 前置登录与奖励同步是两个独立请求。前置请求可能因为奖励已领取等
+        // 正常业务状态返回 400，但这并不代表奖励同步一定会失败，因此不能
+        // 用它作为后续请求的硬性门槛。最终结果始终以 leagueRewards/sync 为准。
         if (requirePreflightLogin) {
-            val login = gameApi.updateDailyLogin(
+            gameApi.updateDailyLogin(
                 targetPersonaId = targetPersonaId,
                 executorPersonaId = cred.executorPersonaId,
                 accessToken = cred.accessToken,
             )
-            // updateDailyLoginProgress establishes the server-side state consumed by
-            // leagueRewards/sync. Do not send the dependent request when preflight
-            // failed; a later retry (after token refresh when applicable) must run
-            // the complete two-request pipeline again.
-            if (login !is ApiCallResult.Success) return login
         }
 
         val league = gameApi.syncLeagueRewards(
@@ -297,10 +294,6 @@ class InjectionEngine(
             gems = gems,
         )
 
-        return when (league) {
-            is ApiCallResult.Success -> ApiCallResult.Success
-            is ApiCallResult.AuthFailed -> league
-            else -> league
-        }
+        return league
     }
 }

@@ -173,7 +173,10 @@ class MainViewModel(
                         addLog("[SUCCESS] 注入完成！", LogLevel.SUCCESS)
                         _uiState.update { it.copy(statusMessage = "完成") }
                     } else {
-                        addLog("[ERROR] 注入未完成", LogLevel.ERROR)
+                        addLog("[ERROR] 注入未完成：${result.message}", LogLevel.ERROR)
+                        result.logs.takeLast(6).forEach { detail ->
+                            addLog("[DETAIL] $detail", LogLevel.ERROR)
+                        }
                         _uiState.update { it.copy(statusMessage = "失败") }
                     }
                 } else {
@@ -194,7 +197,17 @@ class MainViewModel(
                         addLog("[SUCCESS] 批量注入完成 (成功 $successCount/$times 次)！", LogLevel.SUCCESS)
                         _uiState.update { it.copy(statusMessage = "完成 (成功 $successCount/$times 次)") }
                     } else {
-                        addLog("[ERROR] 批量注入未完成", LogLevel.ERROR)
+                        val reasons = results
+                            .groupingBy { it.message }
+                            .eachCount()
+                            .entries
+                            .sortedByDescending { it.value }
+                            .take(3)
+                            .joinToString("；") { (message, count) -> "$message ×$count" }
+                        addLog("[ERROR] 批量注入未完成：$reasons", LogLevel.ERROR)
+                        results.firstOrNull()?.logs?.takeLast(6)?.forEach { detail ->
+                            addLog("[DETAIL] $detail", LogLevel.ERROR)
+                        }
                         _uiState.update { it.copy(statusMessage = "失败") }
                     }
                 }
