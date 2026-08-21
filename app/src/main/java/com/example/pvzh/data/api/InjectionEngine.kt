@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import java.util.Collections
@@ -217,6 +218,7 @@ class InjectionEngine(
         gemsPerTimes: Int,
         times: Int,
         concurrency: Int = 8,
+        launchIntervalMs: Long = 100L,
         requirePreflightLogin: Boolean = true,
         isCancelled: () -> Boolean = { false },
         onProgress: (completed: Int) -> Unit = {},
@@ -230,6 +232,9 @@ class InjectionEngine(
         // rewards=[] 仅统计为竞争落败，不刷新 Token，也不切换公共凭证。
         (0 until times).map { count ->
             async(Dispatchers.IO) {
+                // 每组内保持“前置登录 -> 奖励同步”连续发送，仅将不同任务组错开。
+                // 这能保留两次请求的短时序关联，同时减少奖励同步请求的瞬时竞争。
+                if (launchIntervalMs > 0) delay(count * launchIntervalMs)
                 semaphore.withPermit {
                     if (isCancelled()) {
                         InjectionDetailResult(
