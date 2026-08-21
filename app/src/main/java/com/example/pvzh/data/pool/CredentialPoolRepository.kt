@@ -63,7 +63,12 @@ class CredentialPoolRepository(
      * 一键获取：同步更新游戏 Content-Version 并获取凭证池
      */
     suspend fun loadAll(forceRefresh: Boolean = false): Result<List<PoolCredential>> {
-        fetchVersion() // 尝试拉取最新版本号（失败时不影响凭证加载）
+        val versionResult = fetchVersion()
+        if (versionResult.isFailure) {
+            return Result.failure(
+                IOException("Content-Version 更新失败，已停止加载凭证", versionResult.exceptionOrNull())
+            )
+        }
         return load(forceRefresh)
     }
 

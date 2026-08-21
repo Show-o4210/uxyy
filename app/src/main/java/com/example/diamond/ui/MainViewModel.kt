@@ -7,8 +7,8 @@ import android.widget.Toast
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.pvzh.data.api.ApiConfig
-import com.example.pvzh.data.api.EaAuthClient
 import com.example.pvzh.data.api.InjectionEngine
+import com.example.pvzh.data.api.InjectionOutcome
 import com.example.pvzh.data.api.RuntimeCredential
 import com.example.pvzh.data.pool.CredentialPoolRepository
 import com.example.pvzh.data.pool.PoolCredential
@@ -50,7 +50,6 @@ data class MainUiState(
 
 class MainViewModel(
     private val repository: CredentialPoolRepository = CredentialPoolRepository(),
-    private val eaAuthClient: EaAuthClient = EaAuthClient(),
     private val injectionEngine: InjectionEngine = InjectionEngine(),
 ) : ViewModel() {
 
@@ -122,9 +121,9 @@ class MainViewModel(
         val gems = state.gemsAmount.toIntOrNull() ?: 0
         val times = state.sendTimes.toIntOrNull() ?: 0
 
-        if (personaId.isBlank()) {
+        if (!personaId.matches(Regex("^[0-9]{6,20}$"))) {
             addLog("[WARN] 未输入目标 Persona ID", LogLevel.WARN)
-            _uiState.update { it.copy(statusMessage = "请输入目标 Persona ID") }
+            _uiState.update { it.copy(statusMessage = "Persona ID 必须为 6~20 位数字") }
             return
         }
 
@@ -185,7 +184,7 @@ class MainViewModel(
                         targetPersonaId = personaId,
                         gemsPerTimes = gems,
                         times = times,
-                        concurrency = 32,
+                        concurrency = 20,
                         requirePreflightLogin = true,
                         isCancelled = { _uiState.value.isCancelled },
                         onProgress = { completed ->
@@ -193,9 +192,19 @@ class MainViewModel(
                         },
                     )
                     val successCount = results.count { it.isSuccess }
-                    if (successCount > 0) {
-                        addLog("[SUCCESS] 批量注入完成 (成功 $successCount/$times 次)！", LogLevel.SUCCESS)
-                        _uiState.update { it.copy(statusMessage = "完成 (成功 $successCount/$times 次)") }
+                    val missCount = results.count { it.outcome == InjectionOutcome.CONCURRENT_MISS }
+                    val cancelledCount = results.count { it.outcome == InjectionOutcome.CANCELLED }
+                    val failedCount = results.size - successCount - missCount - cancelledCount
+                    val summary = "确认成功 $successCount/$times，竞争落败 $missCount，失败 $failedCount"
+                    if (successCount == times) {
+                        addLog("[SUCCESS] 批量注入完成：$summary", LogLevel.SUCCESS)
+                        _uiState.update { it.copy(statusMessage = "完成 ($summary)") }
+                    } else if (successCount > 0 || missCount > 0) {
+                        addLog("[WARN] 批量任务完成：$summary", LogLevel.WARN)
+                        results.lastOrNull { it.outcome == InjectionOutcome.FAILED }?.logs?.takeLast(6)?.forEach { detail ->
+                            addLog("[DETAIL] $detail", LogLevel.WARN)
+                        }
+                        _uiState.update { it.copy(statusMessage = summary) }
                     } else {
                         val reasons = results
                             .groupingBy { it.message }
@@ -208,7 +217,7 @@ class MainViewModel(
                         results.firstOrNull()?.logs?.takeLast(6)?.forEach { detail ->
                             addLog("[DETAIL] $detail", LogLevel.ERROR)
                         }
-                        _uiState.update { it.copy(statusMessage = "失败") }
+                        _uiState.update { it.copy(statusMessage = "失败 ($summary)") }
                     }
                 }
             } catch (_: CancellationException) {

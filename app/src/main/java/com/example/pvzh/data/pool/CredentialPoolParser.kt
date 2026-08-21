@@ -83,6 +83,9 @@ object CredentialPoolParser {
         if (trimmed.isEmpty()) {
             throw PoolParseException("version.json 内容为空")
         }
+        if (!Regex("^[0-9a-fA-F]{32}$").matches(trimmed)) {
+            throw PoolParseException("version.json 不是合法的 32 位 Content-Version")
+        }
         return trimmed
     }
 

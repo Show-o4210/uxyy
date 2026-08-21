@@ -8,8 +8,15 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 
 sealed class ApiCallResult {
-    data object Success : ApiCallResult()
+    data class Success(
+        val code: Int,
+        val responseBody: String,
+        val gemsAwarded: Int? = null,
+    ) : ApiCallResult()
     data class AuthFailed(val code: Int = 401, val message: String = "未授权或 Token 已失效") : ApiCallResult()
+    data class RateLimited(val code: Int = 429, val message: String = "请求过于频繁") : ApiCallResult()
+    data class ConcurrentMiss(val code: Int, val responseBody: String) : ApiCallResult()
+    data class BusinessRejected(val code: Int, val message: String, val responseBody: String) : ApiCallResult()
     data class Failed(val code: Int = -1, val message: String = "请求失败", val cause: Throwable? = null) : ApiCallResult()
 }
 
@@ -48,7 +55,7 @@ class PvzhApiClient(
         val url = "${ApiConfig.GAME_HOST}/pvp/v1/leagueRewards/sync?playerId=$targetPersonaId"
         val body =
             """{"tickets":$tickets,"gems":$gems,"sparks":$sparks,"packs":[],"specificCards":[]}"""
-        postJson(url, executorPersonaId, accessToken, body)
+        postJson(url, executorPersonaId, accessToken, body, expectedGems = gems)
     }
 
     private fun postJson(
@@ -56,6 +63,7 @@ class PvzhApiClient(
         executorPersonaId: String,
         accessToken: String,
         jsonBody: String,
+        expectedGems: Int? = null,
     ): ApiCallResult {
         val request = Request.Builder()
             .url(url)
@@ -64,17 +72,45 @@ class PvzhApiClient(
             .build()
         return try {
             http.newCall(request).execute().use { response ->
+                val responseBody = response.body?.string().orEmpty()
                 when {
-                    response.isSuccessful -> ApiCallResult.Success
                     response.code == 401 || response.code == 403 ->
-                        ApiCallResult.AuthFailed(response.code, "HTTP ${response.code}: 凭证被拒绝")
-                    else ->
-                        ApiCallResult.Failed(response.code, "HTTP ${response.code}: ${response.message}")
+                        ApiCallResult.AuthFailed(response.code, errorMessage(response.code, responseBody, "凭证被拒绝"))
+                    response.code == 429 ->
+                        ApiCallResult.RateLimited(message = errorMessage(response.code, responseBody, "请求过于频繁"))
+                    !response.isSuccessful ->
+                        ApiCallResult.Failed(response.code, errorMessage(response.code, responseBody, response.message))
+                    expectedGems != null -> validateRewardResponse(response.code, responseBody, expectedGems)
+                    else -> ApiCallResult.Success(response.code, responseBody)
                 }
             }
         } catch (e: Exception) {
             ApiCallResult.Failed(message = "网络连接异常: ${e.message}", cause = e)
         }
+    }
+
+    internal fun validateRewardResponse(code: Int, body: String, expectedGems: Int): ApiCallResult {
+        if (!Regex("\"rewards\"\\s*:\\s*\\[").containsMatchIn(body)) {
+            return ApiCallResult.BusinessRejected(code, "HTTP $code 但响应中缺少 rewards", body)
+        }
+        if (Regex("\"rewards\"\\s*:\\s*\\[\\s*]").containsMatchIn(body)) {
+            return ApiCallResult.ConcurrentMiss(code, body)
+        }
+        val awarded = SimpleJson.int(body, "gemsAwarded")
+            ?: return ApiCallResult.BusinessRejected(code, "HTTP $code 但响应中缺少 gemsAwarded", body)
+        if (awarded != expectedGems) {
+            return ApiCallResult.BusinessRejected(
+                code,
+                "服务器确认发放 $awarded 钻，与请求的 $expectedGems 钻不一致",
+                body,
+            )
+        }
+        return ApiCallResult.Success(code, body, awarded)
+    }
+
+    private fun errorMessage(code: Int, body: String, fallback: String): String {
+        val detail = body.replace(Regex("\\s+"), " ").trim().take(300)
+        return "HTTP $code: ${detail.ifBlank { fallback }}"
     }
 
     private fun buildHeaders(executorPersonaId: String, accessToken: String) =

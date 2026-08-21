@@ -14,11 +14,14 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * 详细的发钻/资源注入执行结果诊断结构。
  */
+enum class InjectionOutcome { CONFIRMED_SUCCESS, CONCURRENT_MISS, FAILED, CANCELLED }
+
 data class InjectionDetailResult(
     val isSuccess: Boolean,
     val successfulIndex: Int,
     val message: String,
     val logs: List<String> = emptyList(),
+    val outcome: InjectionOutcome = if (isSuccess) InjectionOutcome.CONFIRMED_SUCCESS else InjectionOutcome.FAILED,
 )
 
 /**
@@ -85,14 +88,24 @@ class InjectionEngine(
             val cred = credentials[index]
             logs.add("尝试凭证 #${cred.id} (index $index, persona ${cred.executorPersonaId})")
 
-            val ok = tryWithCredential(cred, targetPersonaId, gems, requirePreflightLogin, logs, isCancelled)
-            if (ok) {
+            val attempt = tryWithCredential(cred, targetPersonaId, gems, requirePreflightLogin, logs, isCancelled)
+            if (attempt is ApiCallResult.Success) {
                 logs.add("凭证 #${cred.id} 执行成功！")
                 return InjectionDetailResult(
                     isSuccess = true,
                     successfulIndex = index,
                     message = "注入成功 (使用凭证 #${cred.id})",
                     logs = logs,
+                )
+            }
+            if (attempt is ApiCallResult.ConcurrentMiss) {
+                logs.add("凭证 #${cred.id} 请求有效，但本次并发竞争未获得奖励")
+                return InjectionDetailResult(
+                    isSuccess = false,
+                    successfulIndex = index,
+                    message = "并发竞争落败（服务器返回空 rewards）",
+                    logs = logs,
+                    outcome = InjectionOutcome.CONCURRENT_MISS,
                 )
             }
         }
@@ -148,7 +161,7 @@ class InjectionEngine(
                     val taskLogs = mutableListOf<String>()
                     taskLogs.add("线程尝试凭证 #${cred.id} (index $index)")
 
-                    val ok = tryWithCredential(
+                    val attempt = tryWithCredential(
                         cred = cred,
                         targetPersonaId = targetPersonaId,
                         gems = gems,
@@ -157,7 +170,7 @@ class InjectionEngine(
                         isCancelled = { isFinished.get() || isCancelled() },
                     )
 
-                    if (ok && isFinished.compareAndSet(false, true)) {
+                    if (attempt is ApiCallResult.Success && isFinished.compareAndSet(false, true)) {
                         taskLogs.add("凭证 #${cred.id} 竞速获胜！")
                         logs.addAll(taskLogs)
                         val res = InjectionDetailResult(
@@ -209,30 +222,37 @@ class InjectionEngine(
         onProgress: (completed: Int) -> Unit = {},
     ): List<InjectionDetailResult> = coroutineScope {
         if (times <= 0 || credentials.isEmpty()) return@coroutineScope emptyList()
-        val semaphore = Semaphore(concurrency.coerceAtLeast(1))
+        val semaphore = Semaphore(concurrency.coerceIn(1, 20))
         val completed = AtomicInteger(0)
+        val stickyCredentialIndex = AtomicInteger(0)
 
-        val tasks = (0 until times).map { count ->
+        // 受控并发：任务从当前粘性凭证开始。确认成功后继续保留该凭证；
+        // rewards=[] 仅统计为竞争落败，不刷新 Token，也不切换公共凭证。
+        (0 until times).map { count ->
             async(Dispatchers.IO) {
-                val result = if (isCancelled()) {
-                    InjectionDetailResult(false, 0, "批处理在第 ${count + 1} 次前被取消")
-                } else {
-                    semaphore.withPermit {
-                        // 每次失败后按凭证顺序自动切换到下一枚 Token，直到成功或池耗尽。
-                        injectOnceSequential(
+                semaphore.withPermit {
+                    if (isCancelled()) {
+                        InjectionDetailResult(
+                            isSuccess = false,
+                            successfulIndex = stickyCredentialIndex.get(),
+                            message = "批处理在第 ${count + 1} 次前被取消",
+                            outcome = InjectionOutcome.CANCELLED,
+                        )
+                    } else {
+                        val result = injectOnceSequential(
                             credentials = credentials,
                             targetPersonaId = targetPersonaId,
                             gems = gemsPerTimes,
+                            startIndex = stickyCredentialIndex.get(),
                             requirePreflightLogin = requirePreflightLogin,
                             isCancelled = isCancelled,
                         )
+                        if (result.isSuccess) stickyCredentialIndex.set(result.successfulIndex)
+                        result
                     }
-                }
-                onProgress(completed.incrementAndGet())
-                result
+                }.also { onProgress(completed.incrementAndGet()) }
             }
-        }
-        tasks.awaitAll()
+        }.awaitAll()
     }
 
     private suspend fun tryWithCredential(
@@ -242,32 +262,43 @@ class InjectionEngine(
         requirePreflightLogin: Boolean,
         logs: MutableList<String>,
         isCancelled: () -> Boolean,
-    ): Boolean {
-        if (isCancelled()) return false
+    ): ApiCallResult {
+        if (isCancelled()) return ApiCallResult.Failed(message = "任务已取消")
 
         // 确保 EA token 处于大致可用状态
         eaAuth.ensureAccessToken(cred, forceRefresh = false)
 
+        val rejectedAccessToken = cred.accessToken
         var result = runPipeline(cred, targetPersonaId, gems, requirePreflightLogin)
-        if (result is ApiCallResult.Success) return true
+        if (result is ApiCallResult.Success) {
+            logs.add("  - 服务器确认 gemsAwarded=${result.gemsAwarded ?: "不适用"}")
+            return result
+        }
+        if (result is ApiCallResult.ConcurrentMiss) {
+            logs.add("  - HTTP ${result.code}，rewards=[]：并发竞争落败")
+            return result
+        }
 
         logs.add("  - 凭证 #${cred.id} 首次请求结果: $result")
 
-        if (result is ApiCallResult.AuthFailed || result is ApiCallResult.Failed) {
-            if (isCancelled()) return false
+        if (result is ApiCallResult.AuthFailed) {
+            if (isCancelled()) return ApiCallResult.Failed(message = "任务已取消")
             logs.add("  - 凭证 #${cred.id} 刷新 EA Token 并重试...")
 
-            val refreshed = eaAuth.refresh(cred)
+            val refreshed = eaAuth.refreshAfterAuthFailure(cred, rejectedAccessToken)
             if (refreshed) {
                 result = runPipeline(cred, targetPersonaId, gems, requirePreflightLogin)
-                if (result is ApiCallResult.Success) return true
+                if (result is ApiCallResult.Success) {
+                    logs.add("  - 刷新后服务器确认 gemsAwarded=${result.gemsAwarded ?: "不适用"}")
+                    return result
+                }
                 logs.add("  - 凭证 #${cred.id} 刷新后重试结果: $result")
             } else {
                 logs.add("  - 凭证 #${cred.id} Token 刷新失败")
             }
         }
 
-        return false
+        return result
     }
 
     private suspend fun runPipeline(

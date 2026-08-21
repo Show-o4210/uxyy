@@ -5,6 +5,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
@@ -22,6 +24,8 @@ sealed class RefreshResult {
 class EaAuthClient(
     private val http: OkHttpClient = HttpClients.shared,
 ) {
+    private val refreshMutex = Mutex()
+
     /**
      * 使用 refresh_token 换取新的 access_token，并返回详细结果。
      */
@@ -72,6 +76,20 @@ class EaAuthClient(
      */
     suspend fun refresh(cred: RuntimeCredential): Boolean {
         return refreshDetailed(cred) is RefreshResult.Success
+    }
+
+    /**
+     * 高并发认证失败后的单飞刷新。同一 Token 被多个任务同时拒绝时，仅第一个
+     * 任务真正发起刷新；其余任务观察到 Token 已更新后直接复用，避免抢刷。
+     */
+    suspend fun refreshAfterAuthFailure(
+        cred: RuntimeCredential,
+        rejectedAccessToken: String,
+    ): Boolean = refreshMutex.withLock {
+        if (cred.accessToken != rejectedAccessToken && cred.accessToken.isNotBlank()) {
+            return@withLock true
+        }
+        refresh(cred)
     }
 
     /** 若 token 可能过期则刷新；无过期时间时也尝试刷新一次提高成功率。 */
